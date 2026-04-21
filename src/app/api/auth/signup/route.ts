@@ -1,0 +1,221 @@
+import { NextRequest, NextResponse } from "next/server";
+import { createUserSchema } from "@/schemas/user.schema";
+import { UserModel } from "@/models/user.model";
+import { connectToDatabase } from "@/lib/dbConnection";
+import { hashPassword } from "@/lib/auth";
+import { generateOTP, getOTPExpiration } from "@/lib/otp";
+import { Resend } from "resend";
+import { EmailTemplate } from "@/components/email-template";
+import {
+  SignupResponse,
+  SignupRequest,
+  SIGNUP_RESPONSES,
+} from "@/types/auth";
+import { ZodError } from "zod";
+
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+/**
+ * POST /api/auth/signup
+ * 
+ * Handles user registration with three scenarios:
+ * 1. First-time user: Creates account, generates OTP, sends verification email
+ * 2. User exists and verified: Returns error (ask to login)
+ * 3. User exists but unverified: Regenerates OTP, sends new verification email
+ */
+export async function POST(request: NextRequest): Promise<NextResponse<SignupResponse>> {
+  try {
+    // Parse request body
+    const body: SignupRequest = await request.json();
+
+    // Validate input using Zod schema
+    const validatedData = createUserSchema.parse(body);
+    const { username, email, password } = validatedData;
+
+    // Connect to database
+    await connectToDatabase();
+
+    // Check if user already exists in database
+    const existingUser = await UserModel.findOne({
+      $or: [{ email }, { username }],
+    });
+
+    // ========== CASE 2: User already exists and is verified ==========
+    if (existingUser && existingUser.isVerified) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: SIGNUP_RESPONSES.USER_ALREADY_VERIFIED.message,
+          error: "User already verified",
+        },
+        { status: SIGNUP_RESPONSES.USER_ALREADY_VERIFIED.statusCode }
+      );
+    }
+
+    // Generate OTP and expiration time
+    const otp = generateOTP();
+    const otpExpiration = getOTPExpiration();
+
+    // ========== CASE 3: User exists but not verified ==========
+    if (existingUser && !existingUser.isVerified) {
+      // Update existing user with new OTP
+      existingUser.verificationToken = otp;
+      existingUser.verificationTokenExpires = otpExpiration;
+      await existingUser.save();
+
+      // Send verification email with OTP
+      try {
+        const { error: emailError } = await resend.emails.send({
+          from: "noreply@mystery-message.com",
+          to: email,
+          subject: "Your Mystery Message Verification OTP",
+          react: EmailTemplate({
+            username,
+            verificationLink: `${process.env.NEXT_PUBLIC_APP_URL}/verify?otp=${otp}&email=${encodeURIComponent(email)}`,
+          }),
+        });
+
+        if (emailError) {
+          console.error("Resend error:", emailError);
+          return NextResponse.json(
+            {
+              success: false,
+              message: SIGNUP_RESPONSES.EMAIL_SEND_ERROR.message,
+              error: "Failed to send email",
+            },
+            { status: SIGNUP_RESPONSES.EMAIL_SEND_ERROR.statusCode }
+          );
+        }
+      } catch (emailSendError) {
+        console.error("Email sending exception:", emailSendError);
+        return NextResponse.json(
+          {
+            success: false,
+            message: SIGNUP_RESPONSES.EMAIL_SEND_ERROR.message,
+            error: "Failed to send email",
+          },
+          { status: SIGNUP_RESPONSES.EMAIL_SEND_ERROR.statusCode }
+        );
+      }
+
+      return NextResponse.json(
+        {
+          success: true,
+          message: SIGNUP_RESPONSES.VERIFICATION_RESENT.message,
+          data: {
+            email,
+            username,
+          },
+        },
+        { status: SIGNUP_RESPONSES.VERIFICATION_RESENT.statusCode }
+      );
+    }
+
+    // ========== CASE 1: First-time user (new signup) ==========
+    // Hash the password before storing
+    const hashedPassword = await hashPassword(password);
+
+    // Create new user document
+    const newUser = new UserModel({
+      username,
+      email,
+      password: hashedPassword,
+      isVerified: false,
+      isAcceptingMessages: true,
+      verificationToken: otp,
+      verificationTokenExpires: otpExpiration,
+    });
+
+    // Save user to database
+    await newUser.save();
+
+    // Send verification email with OTP
+    try {
+      const { error: emailError } = await resend.emails.send({
+        from: "noreply@mystery-message.com",
+        to: email,
+        subject: "Welcome to Mystery Message! Verify Your Email",
+        react: EmailTemplate({
+          username,
+          verificationLink: `${process.env.NEXT_PUBLIC_APP_URL}/verify?otp=${otp}&email=${encodeURIComponent(email)}`,
+        }),
+      });
+
+      if (emailError) {
+        console.error("Resend error:", emailError);
+        // User was created but email failed - still inform client
+        return NextResponse.json(
+          {
+            success: false,
+            message: SIGNUP_RESPONSES.EMAIL_SEND_ERROR.message,
+            error: "User created but verification email failed",
+          },
+          { status: SIGNUP_RESPONSES.EMAIL_SEND_ERROR.statusCode }
+        );
+      }
+    } catch (emailSendError) {
+      console.error("Email sending exception:", emailSendError);
+      return NextResponse.json(
+        {
+          success: false,
+          message: SIGNUP_RESPONSES.EMAIL_SEND_ERROR.message,
+          error: "User created but verification email failed",
+        },
+        { status: SIGNUP_RESPONSES.EMAIL_SEND_ERROR.statusCode }
+      );
+    }
+
+    return NextResponse.json(
+      {
+        success: true,
+        message: SIGNUP_RESPONSES.USER_CREATED_VERIFICATION_SENT.message,
+        data: {
+          userId: newUser._id?.toString(),
+          username: newUser.username,
+          email: newUser.email,
+        },
+      },
+      { status: SIGNUP_RESPONSES.USER_CREATED_VERIFICATION_SENT.statusCode }
+    );
+  } catch (error) {
+    // Handle Zod validation errors
+    if (error instanceof ZodError) {
+      const formattedErrors = error.issues.map((err) => ({
+        field: err.path.join("."),
+        message: err.message,
+      }));
+
+      return NextResponse.json(
+        {
+          success: false,
+          message: SIGNUP_RESPONSES.VALIDATION_ERROR.message,
+          error: JSON.stringify(formattedErrors),
+        },
+        { status: SIGNUP_RESPONSES.VALIDATION_ERROR.statusCode }
+      );
+    }
+
+    // Handle database connection errors
+    if (error instanceof Error && error.message.includes("MONGODB")) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: SIGNUP_RESPONSES.DB_CONNECTION_ERROR.message,
+          error: "Database connection failed",
+        },
+        { status: SIGNUP_RESPONSES.DB_CONNECTION_ERROR.statusCode }
+      );
+    }
+
+    // Handle all other errors
+    console.error("Signup error:", error);
+    return NextResponse.json(
+      {
+        success: false,
+        message: SIGNUP_RESPONSES.INTERNAL_ERROR.message,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      { status: SIGNUP_RESPONSES.INTERNAL_ERROR.statusCode }
+    );
+  }
+}
