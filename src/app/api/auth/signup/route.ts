@@ -14,6 +14,34 @@ import {
 import { ZodError } from "zod";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
+const SENDER_EMAIL = process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev";
+
+/**
+ * Send verification email via Resend
+ * @param email - Recipient email address
+ * @param username - Username for email template
+ * @param otp - OTP code for verification link
+ * @returns Object with success status and error if any
+ */
+async function sendVerificationEmail(
+  email: string,
+  username: string,
+  otp: string
+) {
+  const verificationLink = `${process.env.NEXT_PUBLIC_APP_URL}/verify?otp=${otp}&email=${encodeURIComponent(email)}`;
+
+  const { error } = await resend.emails.send({
+    from: SENDER_EMAIL,
+    to: email,
+    subject: "Welcome to Mystery Message! Verify Your Email",
+    react: EmailTemplate({
+      username,
+      verificationLink,
+    }),
+  });
+
+  return { error };
+}
 
 /**
  * POST /api/auth/signup
@@ -65,15 +93,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<SignupRes
 
       // Send verification email with OTP
       try {
-        const { error: emailError } = await resend.emails.send({
-          from: "noreply@mystery-message.com",
-          to: email,
-          subject: "Your Mystery Message Verification OTP",
-          react: EmailTemplate({
-            username,
-            verificationLink: `${process.env.NEXT_PUBLIC_APP_URL}/verify?otp=${otp}&email=${encodeURIComponent(email)}`,
-          }),
-        });
+        const { error: emailError } = await sendVerificationEmail(email, username, otp);
 
         if (emailError) {
           console.error("Resend error:", emailError);
@@ -131,15 +151,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<SignupRes
 
     // Send verification email with OTP
     try {
-      const { error: emailError } = await resend.emails.send({
-        from: "noreply@mystery-message.com",
-        to: email,
-        subject: "Welcome to Mystery Message! Verify Your Email",
-        react: EmailTemplate({
-          username,
-          verificationLink: `${process.env.NEXT_PUBLIC_APP_URL}/verify?otp=${otp}&email=${encodeURIComponent(email)}`,
-        }),
-      });
+      const { error: emailError } = await sendVerificationEmail(email, username, otp);
 
       if (emailError) {
         console.error("Resend error:", emailError);

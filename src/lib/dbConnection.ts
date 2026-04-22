@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 
 const MONGODB_URI = process.env.MONGODB_URI as string;
+const MONGODB_DB_NAME = process.env.MONGODB_DB_NAME || "mystery_message";
 
 if (!MONGODB_URI) {
   throw new Error(
@@ -14,7 +15,6 @@ type MongooseCache = {
 };
 
 declare global {
-  // eslint-disable-next-line no-var
   var mongooseCache: MongooseCache | undefined;
 }
 
@@ -35,6 +35,7 @@ export async function connectToDatabase() {
   if (!cached.promise) {
     cached.promise = mongoose.connect(MONGODB_URI, {
       bufferCommands: false,
+      dbName: MONGODB_DB_NAME,
     }).catch((err) => {
       cached.promise = null; // reset on failure
       throw err;

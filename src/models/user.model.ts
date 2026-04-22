@@ -4,8 +4,8 @@ export interface UserDocument extends Document {
   username: string;
   email: string;
   password: string;
-  verificationToken: string;
-  verificationTokenExpires: Date;
+  verificationToken?: string | null;
+  verificationTokenExpires?: Date | null;
   isAcceptingMessages: boolean;
   isVerified: boolean;
   createdAt: Date;
@@ -48,9 +48,11 @@ const userSchema = new Schema<UserDocument>(
     },
     verificationToken: {
       type: String,
+      default: null,
     },
     verificationTokenExpires: {
       type: Date,
+      default: null,
     },
   },
   {

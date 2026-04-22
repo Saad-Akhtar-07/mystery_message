@@ -29,7 +29,7 @@ export function EmailTemplate({ username, verificationLink }: EmailTemplateProps
         </h1>
 
         <p style={{ color: "#666", lineHeight: "1.6", marginBottom: "20px" }}>
-          Thank you for signing up. We're excited to have you join our community!
+          Thank you for signing up. We&apos;re excited to have you join our community!
         </p>
 
         {verificationLink && (
@@ -55,7 +55,7 @@ export function EmailTemplate({ username, verificationLink }: EmailTemplateProps
         )}
 
         <p style={{ color: "#999", fontSize: "12px", marginTop: "30px" }}>
-          If you didn't sign up for this account, please ignore this email.
+          If you didn&apos;t sign up for this account, please ignore this email.
         </p>
       </div>
     </div>

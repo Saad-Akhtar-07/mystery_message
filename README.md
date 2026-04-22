@@ -1,36 +1,66 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Mystery Message
 
-## Getting Started
+Anonymous messaging app built with Next.js 16, MongoDB, Zod, Resend, and Auth.js v5 (Credentials provider).
 
-First, run the development server:
+## Auth Architecture
+
+The project now uses a credentials flow with username and password:
+
+1. Input is validated with Zod (`signInSchema`) in both server action and Auth.js authorize callback.
+2. User is fetched from MongoDB by username.
+3. Password is verified with bcrypt.
+4. Unverified users are blocked from login with a dedicated auth error code.
+5. On successful login, user fields are written into JWT and then copied into the session.
+
+This lets the app read common user data from session/token without additional DB calls on every request.
+
+## Implemented Auth Files
+
+- `auth.ts`: Main Auth.js v5 config (providers, callbacks, signIn/signOut/auth exports)
+- `src/app/api/auth/[...nextauth]/route.ts`: Auth route handlers
+- `proxy.ts`: Route guarding and redirect strategy
+- `src/types/next-auth.d.ts`: Session/JWT type augmentation
+- `src/components/auth/auth-provider.tsx`: Session provider for client-side context
+- `src/hooks/use-auth-session.ts`: Small helper hook around `useSession`
+- `src/app/sign-in/*`: Credentials sign-in UI + server action
+
+## Environment Variables
+
+Create/update `.env.local` with:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+MONGODB_URI=your_mongodb_connection_string
+RESEND_API_KEY=your_resend_api_key
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+AUTH_SECRET=your_random_secret
+AUTH_TRUST_HOST=true
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+`AUTH_SECRET` is mandatory for Auth.js token/session encryption.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Run Locally
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm install
+npm run dev
+```
 
-## Learn More
+Open `http://localhost:3000`.
 
-To learn more about Next.js, take a look at the following resources:
+## Available Routes
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- `/`: Landing page
+- `/sign-in`: Credentials login
+- `/sign-up`: Placeholder page (signup API is ready)
+- `/dashboard`: Protected route (requires session)
+- `/api/auth/signup`: Existing OTP-based signup API
+- `/api/auth/[...nextauth]`: Auth.js endpoints
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Quality Checks
 
-## Deploy on Vercel
+```bash
+npm run lint
+npm run build
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Both currently pass.

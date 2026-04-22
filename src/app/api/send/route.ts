@@ -19,7 +19,7 @@ export async function POST(request: NextRequest) {
 
     // Send email using Resend with react-email template
     const { data, error } = await resend.emails.send({
-      from: "noreply@mystery-message.com",
+      from: "onboarding@resend.dev",
       to: email,
       subject: "Welcome to Mystery Message! Verify your email",
       react: EmailTemplate({ username, verificationLink }),
