@@ -4,7 +4,7 @@ import { UserModel } from "@/models/user.model";
 import { connectToDatabase } from "@/lib/dbConnection";
 import { hashPassword } from "@/lib/auth";
 import { generateOTP, getOTPExpiration } from "@/lib/otp";
-import { Resend } from "resend";
+import nodemailer from "nodemailer";
 import { EmailTemplate } from "@/components/email-template";
 import {
   SignupResponse,
@@ -13,8 +13,7 @@ import {
 } from "@/types/auth";
 import { ZodError } from "zod";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
-const SENDER_EMAIL = process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev";
+const SENDER_EMAIL = process.env.SMTP_FROM_EMAIL || process.env.RESEND_FROM_EMAIL || "no-reply@localhost";
 
 /**
  * Send verification email via Resend
@@ -30,17 +29,59 @@ async function sendVerificationEmail(
 ) {
   const verificationLink = `${process.env.NEXT_PUBLIC_APP_URL}/verify?otp=${otp}&email=${encodeURIComponent(email)}`;
 
-  const { error } = await resend.emails.send({
-    from: SENDER_EMAIL,
-    to: email,
-    subject: "Welcome to Mystery Message! Verify Your Email",
-    react: EmailTemplate({
-      username,
-      verificationLink,
-    }),
-  });
+  // Render an HTML email. Avoid importing react-dom/server inside app routes
+  // to keep build/tooling simple — produce the same markup as EmailTemplate.
+  const html = `
+  <div style="font-family: Arial, sans-serif; max-width:600px; margin:0 auto; padding:20px; background-color:#f5f5f5;">
+    <div style="background-color:#ffffff; border-radius:8px; padding:30px; box-shadow:0 2px 4px rgba(0,0,0,0.1);">
+      <h1 style="color:#333; margin-bottom:20px;">Welcome to Mystery Message, ${username}!</h1>
+      <p style="color:#666; line-height:1.6; margin-bottom:20px;">Thank you for signing up. We're excited to have you join our community!</p>
+      ${verificationLink ? `
+        <div style="margin-bottom:20px;">
+          <p style="color:#666; margin-bottom:15px;">Click the button below to verify your email address:</p>
+          <a href="${verificationLink}" style="display:inline-block; background-color:#007bff; color:#ffffff; padding:12px 30px; border-radius:6px; text-decoration:none; font-weight:bold;">Verify Email</a>
+        </div>
+      ` : ""}
+      <p style="color:#999; font-size:12px; margin-top:30px;">If you didn't sign up for this account, please ignore this email.</p>
+    </div>
+  </div>`;
 
-  return { error };
+  // Read SMTP config from env
+  const smtpHost = process.env.SMTP_HOST;
+  const smtpPort = process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : undefined;
+  const smtpUser = process.env.SMTP_USER;
+  const smtpPass = process.env.SMTP_PASS;
+  const smtpSecure = process.env.SMTP_SECURE === "true";
+
+  // If SMTP isn't configured, return the verification link (dev fallback)
+  if (!smtpHost || !smtpUser || !smtpPass) {
+    console.warn("SMTP not configured. Skipping email send. Verification link:", verificationLink);
+    return { error: null, verificationLink, skipped: true };
+  }
+
+  try {
+    const transporter = nodemailer.createTransport({
+      host: smtpHost,
+      port: smtpPort,
+      secure: !!smtpSecure,
+      auth: {
+        user: smtpUser,
+        pass: smtpPass,
+      },
+    });
+
+    const info = await transporter.sendMail({
+      from: SENDER_EMAIL,
+      to: email,
+      subject: "Welcome to Mystery Message! Verify Your Email",
+      html,
+    });
+
+    return { error: null, info, verificationLink };
+  } catch (err) {
+    console.error("Nodemailer error:", err);
+    return { error: err, verificationLink };
+  }
 }
 
 /**
@@ -93,10 +134,10 @@ export async function POST(request: NextRequest): Promise<NextResponse<SignupRes
 
       // Send verification email with OTP
       try {
-        const { error: emailError } = await sendVerificationEmail(email, username, otp);
+        const { error: emailError, skipped, verificationLink } = await sendVerificationEmail(email, username, otp);
 
         if (emailError) {
-          console.error("Resend error:", emailError);
+          console.error("Email send error:", emailError);
           return NextResponse.json(
             {
               success: false,
@@ -104,6 +145,22 @@ export async function POST(request: NextRequest): Promise<NextResponse<SignupRes
               error: "Failed to send email",
             },
             { status: SIGNUP_RESPONSES.EMAIL_SEND_ERROR.statusCode }
+          );
+        }
+
+        // If SMTP not configured (dev), return the verification link so devs can continue testing
+        if (skipped) {
+          return NextResponse.json(
+            {
+              success: true,
+              message: SIGNUP_RESPONSES.VERIFICATION_RESENT.message,
+              data: {
+                email,
+                username,
+                verificationLink,
+              },
+            },
+            { status: SIGNUP_RESPONSES.VERIFICATION_RESENT.statusCode }
           );
         }
       } catch (emailSendError) {
@@ -151,10 +208,10 @@ export async function POST(request: NextRequest): Promise<NextResponse<SignupRes
 
     // Send verification email with OTP
     try {
-      const { error: emailError } = await sendVerificationEmail(email, username, otp);
+      const { error: emailError, skipped, verificationLink } = await sendVerificationEmail(email, username, otp);
 
       if (emailError) {
-        console.error("Resend error:", emailError);
+        console.error("Email send error:", emailError);
         // User was created but email failed - still inform client
         return NextResponse.json(
           {
@@ -163,6 +220,23 @@ export async function POST(request: NextRequest): Promise<NextResponse<SignupRes
             error: "User created but verification email failed",
           },
           { status: SIGNUP_RESPONSES.EMAIL_SEND_ERROR.statusCode }
+        );
+      }
+
+      // Dev fallback: include verification link in response when SMTP not configured
+      if (skipped) {
+        return NextResponse.json(
+          {
+            success: true,
+            message: SIGNUP_RESPONSES.USER_CREATED_VERIFICATION_SENT.message,
+            data: {
+              userId: newUser._id?.toString(),
+              username: newUser.username,
+              email: newUser.email,
+              verificationLink,
+            },
+          },
+          { status: SIGNUP_RESPONSES.USER_CREATED_VERIFICATION_SENT.statusCode }
         );
       }
     } catch (emailSendError) {

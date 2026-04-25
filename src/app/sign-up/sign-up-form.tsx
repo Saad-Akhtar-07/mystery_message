@@ -1,154 +1,288 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useState } from "react";
 import Link from "next/link";
+import { useForm, Controller } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useDebounceCallback } from "usehooks-ts";
+import { toast } from "sonner";
+import * as z from "zod";
 import { createUserSchema } from "@/schemas/user.schema";
 import type { SignupResponse } from "@/types/auth";
 
-type FormStatus = "idle" | "success" | "error";
+type FormData = z.infer<typeof createUserSchema>;
 
-const initialFormData = {
-  username: "",
-  email: "",
-  password: "",
-};
+interface UsernameCheckResponse {
+  success: boolean;
+  available?: boolean;
+}
 
 export function SignUpForm() {
-  const [formData, setFormData] = useState(initialFormData);
-  const [status, setStatus] = useState<FormStatus>("idle");
-  const [message, setMessage] = useState<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isCheckingUsername, setIsCheckingUsername] = useState(false);
+  const [usernameAvailable, setUsernameAvailable] = useState<boolean | null>(
+    null
+  );
 
-  const statusClasses = useMemo(() => {
-    if (status === "success") {
-      return "bg-emerald-50 text-emerald-700 border border-emerald-200";
-    }
+  const {
+    control,
+    handleSubmit,
+    watch,
+    formState: { errors, isSubmitting, isValid },
+    setError,
+  } = useForm<FormData>({
+    resolver: zodResolver(createUserSchema),
+    mode: "onChange",
+    defaultValues: {
+      username: "",
+      email: "",
+      password: "",
+    },
+  });
 
-    if (status === "error") {
-      return "bg-red-50 text-red-700 border border-red-200";
-    }
+  const usernameValue = watch("username");
 
-    return "";
-  }, [status]);
+  // Debounced callback to check username availability
+  const checkUsernameAvailability = useDebounceCallback(
+    async (username: string) => {
+      if (!username || username.length < 3) {
+        setUsernameAvailable(null);
+        return;
+      }
 
-  const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value } = event.target;
-    setFormData((previous) => ({
-      ...previous,
-      [name]: value,
-    }));
-  };
+      try {
+        setIsCheckingUsername(true);
+        const response = await fetch(
+          `/api/auth/check-username?username=${encodeURIComponent(username)}`
+        );
 
-  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setStatus("idle");
-    setMessage(null);
+        const data = (await response.json()) as UsernameCheckResponse;
 
-    const parsedData = createUserSchema.safeParse(formData);
+        if (data.success) {
+          setUsernameAvailable(data.available ?? false);
 
-    if (!parsedData.success) {
-      setStatus("error");
-      setMessage(parsedData.error.issues[0]?.message ?? "Invalid input.");
+          if (!data.available) {
+            setError("username", {
+              type: "manual",
+              message: "Username is already taken",
+            });
+          }
+        }
+      } catch (error) {
+        console.error("Error checking username:", error);
+        toast.error("Failed to check username availability");
+      } finally {
+        setIsCheckingUsername(false);
+      }
+    },
+    500
+  );
+
+  // Handle username change with debounced check
+  const handleUsernameChange = useCallback(
+    (value: string) => {
+      // Clear the availability state while typing
+      setUsernameAvailable(null);
+      // Trigger debounced check
+      checkUsernameAvailability(value);
+    },
+    [checkUsernameAvailability]
+  );
+
+  const onSubmit = async (data: FormData) => {
+    // Final validation: ensure username is available
+    if (!usernameAvailable) {
+      toast.error("Username is not available");
       return;
     }
 
     try {
-      setIsSubmitting(true);
-
       const response = await fetch("/api/auth/signup", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(parsedData.data),
+        body: JSON.stringify(data),
       });
 
       const result = (await response.json()) as SignupResponse;
 
       if (!response.ok || !result.success) {
-        setStatus("error");
-        setMessage(result.message || "Sign-up failed. Please try again.");
+        toast.error(result.message || "Sign-up failed. Please try again.");
         return;
       }
 
-      setStatus("success");
-      setMessage(result.message);
-      setFormData({ username: "", email: "", password: "" });
-    } catch {
-      setStatus("error");
-      setMessage("Network error. Please try again.");
-    } finally {
-      setIsSubmitting(false);
+      toast.success(
+        result.message || "Account created! Check your email to verify."
+      );
+      // Reset form is handled by React Hook Form
+    } catch (error) {
+      console.error("Sign-up error:", error);
+      toast.error("Network error. Please try again.");
     }
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="space-y-1">
-        <label htmlFor="username" className="text-sm font-medium text-zinc-700">
-          Username
-        </label>
-        <input
-          id="username"
+    <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+      {/* Username Field */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <label htmlFor="username" className="text-sm font-semibold text-zinc-900">
+            Username
+          </label>
+          <div className="flex items-center gap-2">
+            {isCheckingUsername && (
+              <div className="flex items-center gap-1">
+                <div className="h-1.5 w-1.5 rounded-full bg-zinc-400 animate-pulse" />
+                <span className="text-xs text-zinc-500">checking...</span>
+              </div>
+            )}
+            {usernameAvailable && !isCheckingUsername && (
+              <span className="text-xs text-emerald-600 font-medium">✓ available</span>
+            )}
+          </div>
+        </div>
+        <Controller
           name="username"
-          type="text"
-          value={formData.username}
-          onChange={handleChange}
-          required
-          className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm outline-none transition focus:border-zinc-500"
-          placeholder="your_username"
+          control={control}
+          render={({ field }) => (
+            <div className="relative">
+              <input
+                {...field}
+                id="username"
+                type="text"
+                placeholder="e.g., john_doe"
+                onChange={(e) => {
+                  field.onChange(e);
+                  handleUsernameChange(e.target.value);
+                }}
+                className={`w-full px-4 py-3 rounded-lg border-2 text-sm font-medium text-zinc-900 placeholder-zinc-400 outline-none transition duration-200 ${
+                  errors.username
+                    ? "border-red-500 focus:border-red-600 focus:ring-2 focus:ring-red-200"
+                    : usernameAvailable
+                      ? "border-emerald-500 focus:border-emerald-600 focus:ring-2 focus:ring-emerald-200"
+                      : "border-zinc-200 bg-white hover:border-zinc-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+                }`}
+                aria-invalid={!!errors.username}
+              />
+            </div>
+          )}
         />
+        {errors.username && (
+          <p className="flex items-center gap-1.5 text-xs text-red-600 font-medium">
+            <span>⚠</span>
+            {errors.username.message}
+          </p>
+        )}
+        <p className="text-xs text-zinc-500">
+          3-30 characters. Letters, numbers, and underscores only.
+        </p>
       </div>
 
-      <div className="space-y-1">
-        <label htmlFor="email" className="text-sm font-medium text-zinc-700">
-          Email
+      {/* Email Field */}
+      <div className="space-y-2">
+        <label htmlFor="email" className="text-sm font-semibold text-zinc-900">
+          Email Address
         </label>
-        <input
-          id="email"
+        <Controller
           name="email"
-          type="email"
-          value={formData.email}
-          onChange={handleChange}
-          required
-          className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm outline-none transition focus:border-zinc-500"
-          placeholder="you@example.com"
+          control={control}
+          render={({ field }) => (
+            <input
+              {...field}
+              id="email"
+              type="email"
+              placeholder="you@example.com"
+              className={`w-full px-4 py-3 rounded-lg border-2 text-sm font-medium text-zinc-900 placeholder-zinc-400 outline-none transition duration-200 ${
+                errors.email
+                  ? "border-red-500 focus:border-red-600 focus:ring-2 focus:ring-red-200"
+                  : "border-zinc-200 bg-white hover:border-zinc-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+              }`}
+              aria-invalid={!!errors.email}
+            />
+          )}
         />
+        {errors.email && (
+          <p className="flex items-center gap-1.5 text-xs text-red-600 font-medium">
+            <span>⚠</span>
+            {errors.email.message}
+          </p>
+        )}
       </div>
 
-      <div className="space-y-1">
-        <label htmlFor="password" className="text-sm font-medium text-zinc-700">
+      {/* Password Field */}
+      <div className="space-y-2">
+        <label htmlFor="password" className="text-sm font-semibold text-zinc-900">
           Password
         </label>
-        <input
-          id="password"
+        <Controller
           name="password"
-          type="password"
-          value={formData.password}
-          onChange={handleChange}
-          required
-          minLength={8}
-          className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm outline-none transition focus:border-zinc-500"
-          placeholder="********"
+          control={control}
+          render={({ field }) => (
+            <input
+              {...field}
+              id="password"
+              type="password"
+              placeholder="••••••••••••"
+              className={`w-full px-4 py-3 rounded-lg border-2 text-sm font-medium text-zinc-900 placeholder-zinc-400 outline-none transition duration-200 ${
+                errors.password
+                  ? "border-red-500 focus:border-red-600 focus:ring-2 focus:ring-red-200"
+                  : "border-zinc-200 bg-white hover:border-zinc-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+              }`}
+              aria-invalid={!!errors.password}
+            />
+          )}
         />
+        {errors.password && (
+          <p className="flex items-center gap-1.5 text-xs text-red-600 font-medium">
+            <span>⚠</span>
+            {errors.password.message}
+          </p>
+        )}
+        <p className="text-xs text-zinc-500">
+          Minimum 8 characters for your security.
+        </p>
       </div>
 
-      {message ? <p className={`rounded-md px-3 py-2 text-sm ${statusClasses}`}>{message}</p> : null}
-
+      {/* Submit Button */}
       <button
         type="submit"
-        disabled={isSubmitting}
-        className="w-full rounded-md bg-zinc-900 px-4 py-2 text-white transition hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-60"
+        disabled={
+          isSubmitting ||
+          !isValid ||
+          isCheckingUsername ||
+          usernameAvailable === false
+        }
+        className={`w-full py-3 px-4 rounded-lg font-semibold text-white transition duration-200 ${
+          isSubmitting ||
+          !isValid ||
+          isCheckingUsername ||
+          usernameAvailable === false
+            ? "bg-zinc-300 cursor-not-allowed text-zinc-600"
+            : "bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 hover:shadow-lg active:scale-95"
+        }`}
       >
-        {isSubmitting ? "Creating account..." : "Create Account"}
+        {isSubmitting ? (
+          <div className="flex items-center justify-center gap-2">
+            <div className="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+            Creating account...
+          </div>
+        ) : (
+          "Create Account"
+        )}
       </button>
 
-      <p className="text-sm text-zinc-600">
-        Already have an account?{" "}
-        <Link href="/sign-in" className="font-medium text-zinc-900 underline">
-          Sign in
-        </Link>
-      </p>
+      {/* Sign In Link */}
+      <div className="text-center pt-2">
+        <p className="text-sm text-zinc-600">
+          Already have an account?{" "}
+          <Link
+            href="/sign-in"
+            className="font-semibold text-blue-600 hover:text-blue-700 hover:underline transition"
+          >
+            Sign in
+          </Link>
+        </p>
+      </div>
     </form>
   );
 }
